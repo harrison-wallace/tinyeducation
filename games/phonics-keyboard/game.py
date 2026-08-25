@@ -1,24 +1,130 @@
-import pygame  # type: ignore
-import sys
+#!/usr/bin/env python3
+"""
+Phonics Keyboard Game - A simple alphabet/phonics learning game for young children.
+Run with: python3 game.py --help
+"""
+
+import argparse
 import os
+import sys
+import warnings
+
+# Suppress the harmless AVX2 performance warning from some pygame builds
+warnings.filterwarnings("ignore", message=".*avx2.*", category=RuntimeWarning)
+
+# Determine the directory this script lives in so we can find assets reliably
+# even when the game is run from the repo root or elsewhere.
+GAME_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Hide pygame's community message for a clean startup (must be before import pygame)
+os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
+
+# Asset paths (always absolute, works no matter where you run from)
+FONT_PATH = os.path.join(GAME_DIR, "SchoolYard-Regular.otf")
+CORRECT_WAV_PATH = os.path.join(GAME_DIR, "correct.wav")
+SOUNDS_DIR = os.path.join(GAME_DIR, "phonic-sounds")
+
+# --------------------------- CLI ARGUMENTS ---------------------------
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Phonics Keyboard Game - Help kids learn letters and keyboard skills.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Controls:
+  SPACE / ENTER / Click "Ready"   Start or retry the game
+  ESC                             Quit at any time
+  Matching letter key             Advance when the letter is shown
+
+Examples:
+  python3 game.py                 # Large windowed (auto-sized to your screen)
+  python3 game.py -f              # Fullscreen
+  python3 game.py --width 1920 --height 1080   # Force exact size
+        """.strip()
+    )
+    parser.add_argument(
+        "-f", "--fullscreen", action="store_true",
+        help="Run in fullscreen mode (can be disorienting on Linux)"
+    )
+    parser.add_argument(
+        "--width", type=int, default=None,
+        help="Window width when not in fullscreen (auto-detected large size by default)"
+    )
+    parser.add_argument(
+        "--height", type=int, default=None,
+        help="Window height when not in fullscreen (auto-detected large size by default)"
+    )
+    return parser.parse_args()
+
+args = parse_args()
+
+# --------------------------- PYGAME INIT ---------------------------
+
+import pygame  # type: ignore  # noqa: E402
+
+print("Phonics Keyboard Game")
+print("-" * 40)
+print("   Initializing pygame...")
 
 pygame.init()
-pygame.mixer.init()  # Explicitly initialize mixer
-screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+pygame.mixer.init()
+print("   Pygame ready (SDL", pygame.version.SDL, ")")
+
+# Create window
+if args.fullscreen:
+    print("   Opening in FULLSCREEN mode...")
+    screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+else:
+    # Smart default: use a large window based on actual desktop size
+    # (avoids tiny 1280x720 default and problems with exact screen-size windowed on Linux)
+    if args.width is None or args.height is None:
+        info = pygame.display.Info()
+        dw, dh = info.current_w, info.current_h
+        # Choose a large window size that still feels immersive but leaves room
+        # for window borders + taskbar/panel (common complaint on 1080p Linux)
+        target_w = min(int(dw * 0.96), dw - 60, 1920)
+        target_h = min(int(dh * 0.92), dh - 80, 1080)
+        args.width = max(800, target_w)
+        args.height = max(600, target_h)
+
+    print(f"   Opening windowed mode at {args.width}x{args.height}...")
+    screen = pygame.display.set_mode((args.width, args.height))
+
 width, height = screen.get_size()
 
-custom_font_path = 'SchoolYard-Regular.otf'
-title_font = pygame.font.Font(custom_font_path, 150)  # Larger font for titles
-game_font = pygame.font.Font(custom_font_path, 1200)  # Font for in-game letters
-menu_font = pygame.font.Font(custom_font_path, 100)   # Font for menus and end screen
-countdown_font = pygame.font.Font(custom_font_path, 300)  # Font for countdown
+if not args.fullscreen and (width, height) != (args.width, args.height):
+    print(f"   (Window manager adjusted actual size to {width}x{height})")
 
-letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'  # Letters to display
+pygame.display.set_caption("Phonics Keyboard Game")
 
-correct_sound = pygame.mixer.Sound('correct.wav')
+# --------------------------- LOAD ASSETS ---------------------------
 
-# Load alphabet sounds (assuming files like 'alphasounds-a.mp3' to 'alphasounds-z.mp3' exist)
-alphabet_sounds = {letter.lower(): pygame.mixer.Sound(f"phonic-sounds/alphasounds-{letter.lower()}.mp3") for letter in letters}
+print("   Loading font...")
+title_font = pygame.font.Font(FONT_PATH, 150)
+game_font = pygame.font.Font(FONT_PATH, 1200)
+menu_font = pygame.font.Font(FONT_PATH, 100)
+countdown_font = pygame.font.Font(FONT_PATH, 300)
+
+print("   Loading sounds (26 letter sounds + feedback)...")
+correct_sound = pygame.mixer.Sound(CORRECT_WAV_PATH)
+
+letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+alphabet_sounds = {}
+missing = []
+for letter in letters:
+    path = os.path.join(SOUNDS_DIR, f"alphasounds-{letter.lower()}.mp3")
+    try:
+        alphabet_sounds[letter.lower()] = pygame.mixer.Sound(path)
+    except Exception as e:
+        missing.append(letter)
+        print(f"   WARNING: Could not load sound for {letter}: {e}")
+
+if missing:
+    print(f"   Loaded {len(alphabet_sounds)}/26 sounds. Missing: {''.join(missing)}")
+else:
+    print(f"   All {len(alphabet_sounds)} sounds loaded successfully.")
+
+print("   Ready!\n")
 
 def animate_bounce(upper, lower):
     for i in range(10):  # 10 frames of bounce animation
@@ -46,31 +152,50 @@ def draw_gradient_background(start_color, end_color):
         b = int(start_color[2] * (1 - ratio) + end_color[2] * ratio)
         pygame.draw.line(screen, (r, g, b), (0, y), (width, y))
 
-while True:  # Main loop for retries
+while True:  # Main loop for retries / returning to menu
     # Start menu with gradient background
     draw_gradient_background((135, 206, 235), (255, 255, 255))  # Light blue to white
-    title_text = title_font.render("Alphabet Game", True, (0, 0, 0))
-    title_rect = title_text.get_rect(center=(width // 2, height // 2 - 150))
+
+    title_text = title_font.render("Phonics Game", True, (0, 0, 0))
+    title_rect = title_text.get_rect(center=(width // 2, height // 2 - 180))
     screen.blit(title_text, title_rect)
-    
+
+    # Subtitle / instructions
+    subtitle = menu_font.render("Learn your letters!", True, (50, 50, 50))
+    subtitle_rect = subtitle.get_rect(center=(width // 2, height // 2 - 80))
+    screen.blit(subtitle, subtitle_rect)
+
     # Draw "Ready" button
     ready_text = menu_font.render("Ready", True, (0, 0, 0))
-    ready_rect = ready_text.get_rect(center=(width // 2, height // 2))
+    ready_rect = ready_text.get_rect(center=(width // 2, height // 2 + 30))
     ready_button_rect = pygame.Rect(ready_rect.left - 20, ready_rect.top - 20, ready_rect.width + 40, ready_rect.height + 40)
     pygame.draw.rect(screen, (0, 255, 0), ready_button_rect)
     pygame.draw.rect(screen, (0, 0, 0), ready_button_rect, 2)
     screen.blit(ready_text, ready_rect)
 
+    # Clear instructions for keyboard users
+    instr1 = pygame.font.Font(FONT_PATH, 36).render("Click Ready  or  press SPACE / ENTER", True, (30, 30, 30))
+    instr1_rect = instr1.get_rect(center=(width // 2, height // 2 + 130))
+    screen.blit(instr1, instr1_rect)
+
+    instr2 = pygame.font.Font(FONT_PATH, 32).render("Press ESC anytime to quit", True, (80, 80, 80))
+    instr2_rect = instr2.get_rect(center=(width // 2, height // 2 + 175))
+    screen.blit(instr2, instr2_rect)
+
     pygame.display.flip()
-    
+
     waiting = True
     while waiting:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                sys.exit()  # Allow window close via X button
+                pygame.quit()
+                sys.exit()
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
-                    sys.exit()  # Allow exit with ESC key
+                    pygame.quit()
+                    sys.exit()
+                if event.key in (pygame.K_SPACE, pygame.K_RETURN, pygame.K_KP_ENTER):
+                    waiting = False
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if ready_button_rect.collidepoint(event.pos):
                     waiting = False
@@ -137,39 +262,53 @@ while True:  # Main loop for retries
     # End screen with total time and average
     total_time = sum(times)
     avg_time = total_time / len(times) if times else 0
-    
+
     draw_gradient_background((135, 206, 235), (255, 255, 255))
+
+    title = menu_font.render("Great job!", True, (0, 0, 0))
+    title_rect = title.get_rect(center=(width // 2, height // 2 - 200))
+    screen.blit(title, title_rect)
+
     total_text = menu_font.render(f"Total Time: {total_time:.2f}s", True, (0, 0, 0))
-    avg_text = menu_font.render(f"Average Time: {avg_time:.2f}s", True, (0, 0, 0))
-    screen.blit(total_text, (width // 2 - total_text.get_width() // 2, height // 2 - 150))
-    screen.blit(avg_text, (width // 2 - avg_text.get_width() // 2, height // 2 - 50))
-    
-    # Draw "Retry" button
+    avg_text = menu_font.render(f"Average: {avg_time:.2f}s per letter", True, (0, 0, 0))
+    screen.blit(total_text, (width // 2 - total_text.get_width() // 2, height // 2 - 100))
+    screen.blit(avg_text, (width // 2 - avg_text.get_width() // 2, height // 2 - 40))
+
+    # Draw "Retry" button (left)
     retry_text = menu_font.render("Retry", True, (0, 0, 0))
-    retry_rect = retry_text.get_rect(center=(width // 2 - 150, height // 2 + 100))
+    retry_rect = retry_text.get_rect(center=(width // 2 - 180, height // 2 + 100))
     retry_button_rect = pygame.Rect(retry_rect.left - 20, retry_rect.top - 20, retry_rect.width + 40, retry_rect.height + 40)
     pygame.draw.rect(screen, (0, 255, 0), retry_button_rect)
     pygame.draw.rect(screen, (0, 0, 0), retry_button_rect, 2)
     screen.blit(retry_text, retry_rect)
-    
-    # Draw "Exit" button
+
+    # Draw "Exit" button (right)
     exit_text = menu_font.render("Exit", True, (0, 0, 0))
-    exit_rect = exit_text.get_rect(center=(width // 2 + 150, height // 2 + 100))
+    exit_rect = exit_text.get_rect(center=(width // 2 + 180, height // 2 + 100))
     exit_button_rect = pygame.Rect(exit_rect.left - 20, exit_rect.top - 20, exit_rect.width + 40, exit_rect.height + 40)
     pygame.draw.rect(screen, (255, 0, 0), exit_button_rect)
     pygame.draw.rect(screen, (0, 0, 0), exit_button_rect, 2)
     screen.blit(exit_text, exit_rect)
-    
+
+    # Keyboard hint
+    hint = pygame.font.Font(FONT_PATH, 32).render("SPACE or click Retry   -   ESC to quit", True, (60, 60, 60))
+    hint_rect = hint.get_rect(center=(width // 2, height // 2 + 190))
+    screen.blit(hint, hint_rect)
+
     pygame.display.flip()
-    
+
     ended = True
     while ended:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                sys.exit()  # Allow window close via X button
+                pygame.quit()
+                sys.exit()
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
-                    sys.exit()  # Allow exit with ESC key
+                    pygame.quit()
+                    sys.exit()
+                if event.key in (pygame.K_SPACE, pygame.K_RETURN, pygame.K_KP_ENTER):
+                    ended = False  # retry
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if retry_button_rect.collidepoint(event.pos):
                     ended = False
